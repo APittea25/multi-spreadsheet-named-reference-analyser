@@ -3,57 +3,67 @@ from openpyxl import load_workbook
 import graphviz
 import io
 import re
+from collections import defaultdict
 
-st.set_page_config(page_title="Full Excel Formula Audit", layout="wide")
+st.set_page_config(page_title="Named Range Formula Dependency Viewer", layout="wide")
 
-# --- Clean formula: remove external links like 'C:\\...\\file.xlsx'! or '[file.xlsx]Sheet'! ---
-def clean_formula(formula):
+# --- Simplify formulas (remove external references) ---
+def simplify_formula(formula):
     if not formula:
         return ""
     return re.sub(r"(?:'[^']*\.xlsx'!|'[^']*'!|\[[^\]]+\][^!]*!)", "", formula)
 
-# --- Extract formulas and dependencies ---
-def extract_all_formulas(wb):
-    formulas = {}
-    for sheet in wb.worksheets:
-        for row in sheet.iter_rows(values_only=False):
-            for cell in row:
-                if cell.value and str(cell.value).strip().startswith("="):
-                    cell_id = f"{sheet.title}!{cell.coordinate}"
-                    formula = clean_formula(str(cell.value).strip())
-                    formulas[cell_id] = formula
-    return formulas
+# --- Extract named ranges and top-left formulas only ---
+def extract_named_references(wb, file_label):
+    named_refs = {}
+    for name in wb.defined_names:
+        dn = wb.defined_names[name]
+        if dn.attr_text and not dn.is_external:
+            for sheet_name, ref in dn.destinations:
+                sheet = wb[sheet_name]
+                label = name
+                try:
+                    coord = ref.replace("$", "").split("!")[-1]
+                    top_left_cell = coord.split(":")[0]  # get top-left if it's a range
+                    cell = sheet[top_left_cell]
+                    raw_value = str(cell.value or "").strip()
+                    if raw_value.startswith("="):
+                        named_refs[label] = {
+                            "sheet": sheet_name,
+                            "ref": ref,
+                            "formula": simplify_formula(raw_value),
+                            "file": file_label
+                        }
+                except Exception:
+                    pass
+    return named_refs
 
-# --- Extract dependencies from formula text ---
-def find_formula_dependencies(formulas):
-    dependencies = {}
-    labels = list(formulas.keys())
+# --- Detect dependencies between formulas ---
+def find_dependencies(named_refs):
+    dependencies = defaultdict(list)
+    labels = list(named_refs.keys())
 
-    for target_cell, formula in formulas.items():
-        formula_upper = formula.upper()
-        refs = []
-        for other_cell in labels:
-            if other_cell == target_cell:
+    for target_label, info in named_refs.items():
+        formula = (info.get("formula") or "").upper()
+        for other_label in labels:
+            if other_label == target_label:
                 continue
-            other_label = other_cell.split("!")[-1].upper()
-            if re.search(rf"\b{re.escape(other_label)}\b", formula_upper):
-                refs.append(other_cell)
-        dependencies[target_cell] = refs
-
+            if re.search(rf"\b{re.escape(other_label.upper())}\b", formula):
+                dependencies[target_label].append(other_label)
     return dependencies
 
-# --- Graph building ---
-def create_dependency_graph(dependencies, all_nodes):
+# --- Graphviz generation ---
+def create_dependency_graph(dependencies, all_labels):
     dot = graphviz.Digraph()
-    for node in all_nodes:
-        dot.node(node)
+    for label in all_labels:
+        dot.node(label)
     for target, sources in dependencies.items():
         for source in sources:
             dot.edge(source, target)
     return dot
 
 # --- Streamlit UI ---
-st.title("📊 Full Excel Formula Dependency Auditor")
+st.title("📊 Named Range Formula Dependency Viewer")
 
 uploaded_file = st.file_uploader("Upload an Excel (.xlsx) file", type=["xlsx"])
 
@@ -61,13 +71,13 @@ if uploaded_file:
     try:
         wb = load_workbook(io.BytesIO(uploaded_file.read()), data_only=False)
 
-        st.subheader("📌 Extracted Formulas")
-        all_formulas = extract_all_formulas(wb)
-        st.json(all_formulas)
+        st.subheader("📌 Named References")
+        named_refs = extract_named_references(wb, uploaded_file.name)
+        st.json(named_refs)
 
         st.subheader("🔗 Dependency Graph")
-        dependencies = find_formula_dependencies(all_formulas)
-        dot = create_dependency_graph(dependencies, all_formulas.keys())
+        dependencies = find_dependencies(named_refs)
+        dot = create_dependency_graph(dependencies, named_refs.keys())
         st.graphviz_chart(dot)
 
     except Exception as e:
