@@ -1,6 +1,7 @@
 import streamlit as st
 from openai import OpenAI
 from openpyxl import load_workbook
+from openpyxl.formula.array import ArrayFormula
 import graphviz
 import io
 import re
@@ -23,7 +24,7 @@ def simplify_formula(formula):
     formula = re.sub(r"\[[^\]]+\][^!]*!", "", formula)
     return formula
 
-# --- Extract named references (supports array formulas using formula_attributes) ---
+# --- Extract named references (now supports ArrayFormula properly) ---
 def extract_named_references(wb, file_label):
     named_refs = {}
 
@@ -39,20 +40,13 @@ def extract_named_references(wb, file_label):
                 top_left_cell = coord.split(":")[0]
                 cell = sheet[top_left_cell]
 
-                # --- Improved formula detection ---
                 raw_formula = None
 
-                # Case 1: standard string formula
-                if isinstance(cell.value, str) and cell.value.strip().startswith("="):
+                if isinstance(cell.value, str) and cell.value.startswith("="):
                     raw_formula = cell.value.strip()
+                elif isinstance(cell.value, ArrayFormula):
+                    raw_formula = cell.value.text.strip()
 
-                # Case 2: formula stored in sheet.formula_attributes
-                elif top_left_cell in sheet.formula_attributes:
-                    attr = sheet.formula_attributes[top_left_cell]
-                    if "text" in attr:
-                        raw_formula = attr["text"].strip()
-
-                # Final processing
                 if raw_formula and raw_formula.startswith("="):
                     simplified = simplify_formula(raw_formula)
                     st.write(f"✅ `{label}` at `{sheet_name}!{top_left_cell}` = {raw_formula} → simplified: `{simplified}`")
@@ -146,7 +140,7 @@ def render_markdown_table(rows):
     return md
 
 # --- Streamlit UI ---
-st.title("📊 Excel Named Reference Dependency Viewer (Array Formula Compatible)")
+st.title("📊 Excel Named Reference Dependency Viewer (ArrayFormula Support)")
 
 uploaded_files = st.file_uploader("Upload Excel files (.xlsx)", type=["xlsx"], accept_multiple_files=True)
 
