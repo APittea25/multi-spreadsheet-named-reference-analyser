@@ -6,7 +6,7 @@ import io
 import re
 from collections import defaultdict
 
-st.set_page_config(page_title="Named Reference Dependency Viewer", layout="wide")
+st.set_page_config(page_title="Excel Named Reference Dependency Viewer", layout="wide")
 
 # --- OpenAI setup ---
 openai_api_key = st.secrets.get("OPENAI_API_KEY")
@@ -42,7 +42,7 @@ def extract_named_references(wb, file_label):
                 named_refs[label].append(item)
     return named_refs
 
-# --- Build dependency map based on label matching ---
+# --- Build dependency map based on formula usage ---
 def find_dependencies(named_refs):
     dependencies = defaultdict(list)
     labels = list(named_refs.keys())
@@ -57,14 +57,14 @@ def find_dependencies(named_refs):
                     dependencies[target_label].append(source_label)
     return dependencies
 
-# --- Create Graphviz dependency graph ---
-def create_dependency_graph(dependencies):
+# --- Create Graphviz dependency graph with all labels ---
+def create_dependency_graph(dependencies, all_labels):
     dot = graphviz.Digraph()
-    for node in dependencies:
-        dot.node(node)
-    for node, deps in dependencies.items():
-        for dep in deps:
-            dot.edge(dep, node)
+    for label in all_labels:
+        dot.node(label)
+    for target, sources in dependencies.items():
+        for source in sources:
+            dot.edge(source, target)
     return dot
 
 # --- GPT explanations ---
@@ -85,7 +85,6 @@ def call_openai(prompt, max_tokens=100):
 def generate_ai_outputs(named_refs):
     results = []
     for label, instances in named_refs.items():
-        # Just use the first formula if there are duplicates
         formula = instances[0].get("formula", "") if instances else ""
         if not formula:
             doc = "No formula."
@@ -138,7 +137,6 @@ if uploaded_files:
         st.subheader("📌 Named References Extracted")
         st.json(combined_named_refs)
 
-        # Show audit trail for naming collisions
         collisions = {k: list(v) for k, v in collision_tracker.items() if len(v) > 1}
         if collisions:
             st.warning("⚠️ Naming collisions detected across files:")
@@ -146,10 +144,10 @@ if uploaded_files:
 
         st.subheader("🔗 Dependency Graph")
         dependencies = find_dependencies(combined_named_refs)
-        dot = create_dependency_graph(dependencies)
+        dot = create_dependency_graph(dependencies, combined_named_refs.keys())
         st.graphviz_chart(dot)
 
-        st.subheader("🧠 AI-Generated Formula Explanations")
+        st.subheader("🧠 AI Formula Explanations")
         with st.spinner("Calling GPT-4..."):
             rows = generate_ai_outputs(combined_named_refs)
             st.markdown(render_markdown_table(rows), unsafe_allow_html=True)
