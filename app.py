@@ -1,21 +1,31 @@
 import streamlit as st
+from openai import OpenAI
 from openpyxl import load_workbook
 import graphviz
 import io
 import re
 from collections import defaultdict
 
-st.set_page_config(page_title="Named Range Formula Dependency Viewer", layout="wide")
+st.set_page_config(page_title="Named Reference Dependency Viewer", layout="wide")
 
-# --- Simplify formulas (remove external references) ---
+# --- OpenAI setup ---
+openai_api_key = st.secrets.get("OPENAI_API_KEY")
+if not openai_api_key:
+    st.error("❌ OPENAI_API_KEY not found in secrets.")
+    st.stop()
+client = OpenAI(api_key=openai_api_key)
+
+# --- Simplify external references like 'C:\path\file.xlsx'!Name or '[file.xlsx]Sheet'!Name ---
 def simplify_formula(formula):
     if not formula:
         return ""
+    # Remove external references and sheet names
     return re.sub(r"(?:'[^']*\.xlsx'!|'[^']*'!|\[[^\]]+\][^!]*!)", "", formula)
 
-# --- Extract named ranges and top-left formulas only ---
+# --- Extract named references using only top-left cell of each range ---
 def extract_named_references(wb, file_label):
     named_refs = {}
+
     for name in wb.defined_names:
         dn = wb.defined_names[name]
         if dn.attr_text and not dn.is_external:
@@ -24,35 +34,38 @@ def extract_named_references(wb, file_label):
                 label = name
                 try:
                     coord = ref.replace("$", "").split("!")[-1]
-                    top_left_cell = coord.split(":")[0]  # get top-left if it's a range
+                    top_left_cell = coord.split(":")[0]  # Only pick top-left cell even in ranges
                     cell = sheet[top_left_cell]
                     raw_value = str(cell.value or "").strip()
-                    if raw_value.startswith("="):
-                        named_refs[label] = {
-                            "sheet": sheet_name,
-                            "ref": ref,
-                            "formula": simplify_formula(raw_value),
-                            "file": file_label
-                        }
+                    formulas = [simplify_formula(raw_value)] if raw_value.startswith("=") else []
+
+                    named_refs[label] = {
+                        "sheet": sheet_name,
+                        "ref": ref,
+                        "formulas": formulas,
+                        "file": file_label
+                    }
                 except Exception:
                     pass
+
     return named_refs
 
-# --- Detect dependencies between formulas ---
+# --- Find dependencies based on presence of other named references in formulas ---
 def find_dependencies(named_refs):
     dependencies = defaultdict(list)
-    labels = list(named_refs.keys())
+    all_labels = list(named_refs.keys())
 
     for target_label, info in named_refs.items():
-        formula = (info.get("formula") or "").upper()
-        for other_label in labels:
+        formula_text = " ".join(info.get("formulas", []))
+        for other_label in all_labels:
             if other_label == target_label:
                 continue
-            if re.search(rf"\b{re.escape(other_label.upper())}\b", formula):
+            if re.search(rf"\b{re.escape(other_label)}\b", formula_text):
                 dependencies[target_label].append(other_label)
+
     return dependencies
 
-# --- Graphviz generation ---
+# --- Graph construction ---
 def create_dependency_graph(dependencies, all_labels):
     dot = graphviz.Digraph()
     for label in all_labels:
@@ -62,25 +75,84 @@ def create_dependency_graph(dependencies, all_labels):
             dot.edge(source, target)
     return dot
 
-# --- Streamlit UI ---
-st.title("📊 Named Range Formula Dependency Viewer")
-
-uploaded_file = st.file_uploader("Upload an Excel (.xlsx) file", type=["xlsx"])
-
-if uploaded_file:
+# --- GPT Explanation ---
+@st.cache_data(show_spinner=False)
+def call_openai(prompt, max_tokens=100):
     try:
-        wb = load_workbook(io.BytesIO(uploaded_file.read()), data_only=False)
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=max_tokens
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        return f"(Error: {e})"
 
-        st.subheader("📌 Named References")
-        named_refs = extract_named_references(wb, uploaded_file.name)
-        st.json(named_refs)
+@st.cache_data(show_spinner=False)
+def generate_ai_outputs(named_refs):
+    results = []
+    for label, info in named_refs.items():
+        formulas = info.get("formulas", [])
+        combined_formula = " + ".join(formulas)
+        if not combined_formula:
+            doc = "No formula."
+            py = ""
+        else:
+            doc = call_openai(f"Explain this Excel formula:\n{combined_formula}")
+            py = call_openai(f"Translate this Excel formula to Python:\n{combined_formula}")
+        results.append({
+            "Named Reference": label,
+            "AI Documentation": doc,
+            "Excel Formula": combined_formula,
+            "Python Formula": py
+        })
+    return results
+
+# --- Markdown rendering ---
+def render_markdown_table(rows):
+    headers = ["Named Reference", "AI Documentation", "Excel Formula", "Python Formula"]
+    md = "| " + " | ".join(headers) + " |\n"
+    md += "| " + " | ".join(["---"] * len(headers)) + " |\n"
+    for row in rows:
+        md += "| " + " | ".join([
+            str(row["Named Reference"]),
+            str(row["AI Documentation"]).replace("\n", " "),
+            str(row["Excel Formula"]).replace("\n", " "),
+            str(row["Python Formula"]).replace("\n", " ")
+        ]) + " |\n"
+    return md
+
+# --- Streamlit UI ---
+st.title("📊 Excel Named Reference Dependency Viewer (Top-Left Cell Only)")
+
+uploaded_files = st.file_uploader("Upload Excel files (.xlsx)", type=["xlsx"], accept_multiple_files=True)
+
+if uploaded_files:
+    combined_named_refs = {}
+
+    for uploaded_file in uploaded_files:
+        try:
+            wb = load_workbook(io.BytesIO(uploaded_file.read()), data_only=False)
+            refs = extract_named_references(wb, uploaded_file.name)
+            combined_named_refs.update(refs)
+        except Exception as e:
+            st.error(f"❌ Error reading {uploaded_file.name}: {e}")
+
+    if combined_named_refs:
+        st.subheader("📌 Named References Extracted")
+        st.json(combined_named_refs)
 
         st.subheader("🔗 Dependency Graph")
-        dependencies = find_dependencies(named_refs)
-        dot = create_dependency_graph(dependencies, named_refs.keys())
+        dependencies = find_dependencies(combined_named_refs)
+        dot = create_dependency_graph(dependencies, combined_named_refs.keys())
         st.graphviz_chart(dot)
 
-    except Exception as e:
-        st.error(f"❌ Error processing file: {e}")
+        st.subheader("🧠 AI-Generated Formula Explanations")
+        with st.spinner("Calling GPT-4..."):
+            rows = generate_ai_outputs(combined_named_refs)
+            st.markdown(render_markdown_table(rows), unsafe_allow_html=True)
+    else:
+        st.warning("No named references found.")
 else:
-    st.info("⬆️ Upload a `.xlsx` file to begin.")
+    st.info("⬆️ Upload one or more `.xlsx` files to begin.")
