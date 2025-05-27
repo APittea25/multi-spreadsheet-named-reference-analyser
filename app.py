@@ -4,6 +4,7 @@ from openpyxl import load_workbook
 import graphviz
 import io
 import re
+from collections import defaultdict
 
 st.set_page_config(page_title="Named Reference Dependency Viewer", layout="wide")
 
@@ -14,50 +15,49 @@ if not openai_api_key:
     st.stop()
 client = OpenAI(api_key=openai_api_key)
 
-# --- Extract named references (labels only) ---
-def extract_named_references(wb):
+# --- Extract named references from a workbook ---
+def extract_named_references(wb, file_label):
     named_refs = {}
     for name in wb.defined_names:
         defined_name = wb.defined_names[name]
         if defined_name.attr_text and not defined_name.is_external:
             for sheet_name, ref in defined_name.destinations:
                 label = defined_name.name
-                named_refs[label] = {
+                if label not in named_refs:
+                    named_refs[label] = []
+                item = {
                     "sheet": sheet_name,
                     "ref": ref,
                     "formula": None,
+                    "file": file_label
                 }
                 try:
                     sheet = wb[sheet_name]
                     cell_ref = ref.split('!')[-1]
                     cell = sheet[cell_ref]
                     if cell.data_type == 'f':
-                        named_refs[label]["formula"] = cell.value
+                        item["formula"] = cell.value
                 except Exception:
                     pass
+                named_refs[label].append(item)
     return named_refs
 
-# --- Find dependencies based on formula references ---
+# --- Build dependency map based on label matching ---
 def find_dependencies(named_refs):
-    dependencies = {}
-    all_labels = list(named_refs.keys())
+    dependencies = defaultdict(list)
+    labels = list(named_refs.keys())
 
-    for target_label, info in named_refs.items():
-        formula = (info.get("formula") or "")
-        deps = []
-
-        for source_label in all_labels:
-            if source_label == target_label:
-                continue
-
-            if re.search(rf"\b{re.escape(source_label)}\b", formula):
-                deps.append(source_label)
-
-        dependencies[target_label] = deps
-
+    for target_label in labels:
+        for instance in named_refs[target_label]:
+            formula = (instance.get("formula") or "")
+            for source_label in labels:
+                if source_label == target_label:
+                    continue
+                if re.search(rf"\b{re.escape(source_label)}\b", formula):
+                    dependencies[target_label].append(source_label)
     return dependencies
 
-# --- Create Graphviz graph (label → label) ---
+# --- Create Graphviz dependency graph ---
 def create_dependency_graph(dependencies):
     dot = graphviz.Digraph()
     for node in dependencies:
@@ -84,8 +84,9 @@ def call_openai(prompt, max_tokens=100):
 @st.cache_data(show_spinner=False)
 def generate_ai_outputs(named_refs):
     results = []
-    for label, info in named_refs.items():
-        formula = info.get("formula", "")
+    for label, instances in named_refs.items():
+        # Just use the first formula if there are duplicates
+        formula = instances[0].get("formula", "") if instances else ""
         if not formula:
             doc = "No formula."
             py = ""
@@ -100,7 +101,7 @@ def generate_ai_outputs(named_refs):
         })
     return results
 
-# --- Markdown table ---
+# --- Markdown table rendering ---
 def render_markdown_table(rows):
     headers = ["Named Reference", "AI Documentation", "Excel Formula", "Python Formula"]
     md = "| " + " | ".join(headers) + " |\n"
@@ -115,29 +116,44 @@ def render_markdown_table(rows):
     return md
 
 # --- Streamlit UI ---
-st.title("📊 Excel Named Reference Dependency Viewer (Simplified, No File Prefix)")
+st.title("📊 Excel Named Reference Dependency Viewer (Multi-Workbook)")
 
-uploaded_file = st.file_uploader("Upload an Excel (.xlsx) file", type=["xlsx"])
+uploaded_files = st.file_uploader("Upload one or more Excel (.xlsx) files", type=["xlsx"], accept_multiple_files=True)
 
-if uploaded_file:
-    try:
-        wb = load_workbook(io.BytesIO(uploaded_file.read()), data_only=False)
-        named_refs = extract_named_references(wb)
+if uploaded_files:
+    combined_named_refs = defaultdict(list)
+    collision_tracker = defaultdict(set)
 
+    for uploaded_file in uploaded_files:
+        try:
+            wb = load_workbook(io.BytesIO(uploaded_file.read()), data_only=False)
+            refs = extract_named_references(wb, uploaded_file.name)
+            for label, entries in refs.items():
+                combined_named_refs[label].extend(entries)
+                collision_tracker[label].add(uploaded_file.name)
+        except Exception as e:
+            st.error(f"❌ Error reading {uploaded_file.name}: {e}")
+
+    if combined_named_refs:
         st.subheader("📌 Named References Extracted")
-        st.json(named_refs)
+        st.json(combined_named_refs)
+
+        # Show audit trail for naming collisions
+        collisions = {k: list(v) for k, v in collision_tracker.items() if len(v) > 1}
+        if collisions:
+            st.warning("⚠️ Naming collisions detected across files:")
+            st.json(collisions)
 
         st.subheader("🔗 Dependency Graph")
-        dependencies = find_dependencies(named_refs)
+        dependencies = find_dependencies(combined_named_refs)
         dot = create_dependency_graph(dependencies)
         st.graphviz_chart(dot)
 
-        st.subheader("🧠 AI Formula Explanations")
+        st.subheader("🧠 AI-Generated Formula Explanations")
         with st.spinner("Calling GPT-4..."):
-            rows = generate_ai_outputs(named_refs)
+            rows = generate_ai_outputs(combined_named_refs)
             st.markdown(render_markdown_table(rows), unsafe_allow_html=True)
-
-    except Exception as e:
-        st.error(f"❌ Error processing file: {e}")
+    else:
+        st.warning("No named references found.")
 else:
-    st.info("⬆️ Upload a `.xlsx` file to begin.")
+    st.info("⬆️ Upload one or more `.xlsx` files to begin.")
