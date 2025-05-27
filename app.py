@@ -3,51 +3,68 @@ from openai import OpenAI
 from openpyxl import load_workbook
 import graphviz
 import io
+import re
 
-st.set_page_config(page_title="Excel Named Range Visualizer", layout="wide")
+st.set_page_config(page_title="Multi-Workbook Named Reference Analyzer", layout="wide")
 
-# Initialize OpenAI
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+# OpenAI setup
+openai_api_key = st.secrets.get("OPENAI_API_KEY")
+if not openai_api_key:
+    st.error("❌ OPENAI_API_KEY not found in Streamlit secrets.")
+    st.stop()
+client = OpenAI(api_key=openai_api_key)
 
-# --- Extract named references ---
-@st.cache_data(show_spinner=False)
-def extract_named_references(_wb):
+# --- Extract named references from a single workbook ---
+def extract_named_references(wb, file_label):
     named_refs = {}
-    for name in _wb.defined_names:
-        defined_name = _wb.defined_names[name]
+    for name in wb.defined_names:
+        defined_name = wb.defined_names[name]
         if defined_name.attr_text and not defined_name.is_external:
             dests = list(defined_name.destinations)
             for sheet_name, ref in dests:
-                named_refs[defined_name.name] = {
+                full_name = f"{file_label}::{defined_name.name}"
+                named_refs[full_name] = {
                     "sheet": sheet_name,
                     "ref": ref,
-                    "formula": None
+                    "formula": None,
+                    "file": file_label,
+                    "pure_name": defined_name.name
                 }
                 try:
-                    sheet = _wb[sheet_name]
+                    sheet = wb[sheet_name]
                     cell_ref = ref.split('!')[-1]
                     cell = sheet[cell_ref]
                     if cell.data_type == 'f':
-                        named_refs[defined_name.name]["formula"] = cell.value
+                        named_refs[full_name]["formula"] = cell.value
                 except Exception:
                     pass
     return named_refs
 
-# --- Find dependencies among named references ---
-@st.cache_data(show_spinner=False)
+# --- Detect cross-file dependencies based on pure name usage ---
 def find_dependencies(named_refs):
     dependencies = {}
-    for name, info in named_refs.items():
-        formula = info.get("formula", "")
-        if formula:
-            formula = formula.upper()
-            deps = [other for other in named_refs if other != name and other.upper() in formula]
-            dependencies[name] = deps
-        else:
-            dependencies[name] = []
+
+    # Build pure-name map: Annuity_Type → [filename::Annuity_Type]
+    pure_to_full = {}
+    for full_name, info in named_refs.items():
+        pure = info["pure_name"].upper()
+        pure_to_full.setdefault(pure, []).append(full_name)
+
+    for current_name, info in named_refs.items():
+        formula = (info.get("formula") or "").upper()
+        deps = []
+
+        for pure_name, full_names in pure_to_full.items():
+            if current_name in full_names:
+                continue
+            if re.search(rf"\b{re.escape(pure_name)}\b", formula):
+                deps.extend(full_names)
+
+        dependencies[current_name] = deps
+
     return dependencies
 
-# --- Create graph ---
+# --- Create Graphviz graph ---
 def create_dependency_graph(dependencies):
     dot = graphviz.Digraph()
     for ref in dependencies:
@@ -57,7 +74,7 @@ def create_dependency_graph(dependencies):
             dot.edge(dep, ref)
     return dot
 
-# --- OpenAI explanations ---
+# --- GPT explanations ---
 @st.cache_data(show_spinner=False)
 def call_openai(prompt, max_tokens=100):
     try:
@@ -96,37 +113,43 @@ def render_markdown_table(rows):
     md += "| " + " | ".join(["---"] * len(headers)) + " |\n"
     for row in rows:
         md += "| " + " | ".join([
-            row["Named Reference"],
-            row["AI Documentation"].replace("\n", " "),
-            row["Excel Formula"].replace("\n", " "),
-            row["Python Formula"].replace("\n", " ")
+            str(row["Named Reference"]),
+            str(row["AI Documentation"]).replace("\n", " "),
+            str(row["Excel Formula"]).replace("\n", " "),
+            str(row["Python Formula"]).replace("\n", " ")
         ]) + " |\n"
     return md
 
 # --- UI ---
-st.title("📊 Excel Named Reference Dependency Viewer")
+st.title("📊 Multi-Workbook Excel Named Reference Dependency Viewer")
 
-uploaded_file = st.file_uploader("Upload an Excel (.xlsx) file", type=["xlsx"])
+uploaded_files = st.file_uploader("Upload one or more Excel (.xlsx) files", type=["xlsx"], accept_multiple_files=True)
 
-if uploaded_file:
-    try:
-        wb = load_workbook(io.BytesIO(uploaded_file.read()), data_only=False)
+if uploaded_files:
+    combined_named_refs = {}
 
-        st.subheader("📌 Named References")
-        named_refs = extract_named_references(wb)
-        st.json(named_refs)
+    for uploaded_file in uploaded_files:
+        try:
+            wb = load_workbook(io.BytesIO(uploaded_file.read()), data_only=False)
+            file_named_refs = extract_named_references(wb, uploaded_file.name)
+            combined_named_refs.update(file_named_refs)
+        except Exception as e:
+            st.error(f"❌ Error reading {uploaded_file.name}: {e}")
+
+    if combined_named_refs:
+        st.subheader("📌 Extracted Named References")
+        st.json(combined_named_refs)
 
         st.subheader("🔗 Dependency Graph")
-        dependencies = find_dependencies(named_refs)
+        dependencies = find_dependencies(combined_named_refs)
         dot = create_dependency_graph(dependencies)
         st.graphviz_chart(dot)
 
-        st.subheader("🧠 AI Formula Explanations")
-        with st.spinner("Asking GPT..."):
-            rows = generate_ai_outputs(named_refs)
+        st.subheader("🧠 AI-Powered Documentation & Translation")
+        with st.spinner("Calling GPT..."):
+            rows = generate_ai_outputs(combined_named_refs)
             st.markdown(render_markdown_table(rows), unsafe_allow_html=True)
-
-    except Exception as e:
-        st.error(f"⚠️ Error processing file: {e}")
+    else:
+        st.warning("No named references found.")
 else:
-    st.info("⬆️ Upload a `.xlsx` file to begin.")
+    st.info("⬆️ Upload one or more `.xlsx` files to begin.")
