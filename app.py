@@ -1,164 +1,76 @@
 import streamlit as st
-from openai import OpenAI
 from openpyxl import load_workbook
 import graphviz
 import io
 import re
-from collections import defaultdict
 
-st.set_page_config(page_title="Named Reference Dependency Viewer", layout="wide")
+st.set_page_config(page_title="Full Excel Formula Audit", layout="wide")
 
-# --- OpenAI setup ---
-openai_api_key = st.secrets.get("OPENAI_API_KEY")
-if not openai_api_key:
-    st.error("❌ OPENAI_API_KEY not found in secrets.")
-    st.stop()
-client = OpenAI(api_key=openai_api_key)
-
-# --- Simplify external references like 'C:\path\file.xlsx'!Name or '[file.xlsx]Sheet'!Name ---
-def simplify_formula(formula):
+# --- Clean formula: remove external links like 'C:\\...\\file.xlsx'! or '[file.xlsx]Sheet'! ---
+def clean_formula(formula):
     if not formula:
         return ""
-    # Remove external references and sheet names
-    return re.sub(r"(?:'[^']*\.xlsx'!|'[^']*'!)", "", formula)
+    return re.sub(r"(?:'[^']*\.xlsx'!|'[^']*'!|\[[^\]]+\][^!]*!)", "", formula)
 
-# --- Extract named references and their formulas from workbook ---
-def extract_named_references(wb, file_label):
-    named_refs = {}
+# --- Extract formulas and dependencies ---
+def extract_all_formulas(wb):
+    formulas = {}
+    for sheet in wb.worksheets:
+        for row in sheet.iter_rows(values_only=False):
+            for cell in row:
+                if cell.value and str(cell.value).strip().startswith("="):
+                    cell_id = f"{sheet.title}!{cell.coordinate}"
+                    formula = clean_formula(str(cell.value).strip())
+                    formulas[cell_id] = formula
+    return formulas
 
-    for name in wb.defined_names:
-        dn = wb.defined_names[name]
-        if dn.attr_text and not dn.is_external:
-            for sheet_name, ref in dn.destinations:
-                sheet = wb[sheet_name]
-                label = name
-                try:
-                    coord = ref.replace("$", "").split("!")[-1]
-                    cell_range = sheet[coord]
-                    # Support single cell or ranges
-                    cells = cell_range if isinstance(cell_range, tuple) else [[cell_range]]
+# --- Extract dependencies from formula text ---
+def find_formula_dependencies(formulas):
+    dependencies = {}
+    labels = list(formulas.keys())
 
-                    formulas = []
-                    for row in cells:
-                        for cell in row:
-                            raw_value = str(cell.value or "").strip()
-                            if raw_value.startswith("="):
-                                formulas.append(simplify_formula(raw_value))
-
-                    named_refs[label] = {
-                        "sheet": sheet_name,
-                        "ref": ref,
-                        "formulas": formulas,
-                        "file": file_label
-                    }
-                except Exception:
-                    pass
-
-    return named_refs
-
-# --- Find dependencies based on presence of other named references in formulas ---
-def find_dependencies(named_refs):
-    dependencies = defaultdict(list)
-    all_labels = list(named_refs.keys())
-
-    for target_label, info in named_refs.items():
-        formula_text = " ".join(info.get("formulas", []))
-        for other_label in all_labels:
-            if other_label == target_label:
+    for target_cell, formula in formulas.items():
+        formula_upper = formula.upper()
+        refs = []
+        for other_cell in labels:
+            if other_cell == target_cell:
                 continue
-            if re.search(rf"\b{re.escape(other_label)}\b", formula_text):
-                dependencies[target_label].append(other_label)
+            other_label = other_cell.split("!")[-1].upper()
+            if re.search(rf"\b{re.escape(other_label)}\b", formula_upper):
+                refs.append(other_cell)
+        dependencies[target_cell] = refs
 
     return dependencies
 
-# --- Graph construction ---
-def create_dependency_graph(dependencies, all_labels):
+# --- Graph building ---
+def create_dependency_graph(dependencies, all_nodes):
     dot = graphviz.Digraph()
-    for label in all_labels:
-        dot.node(label)
+    for node in all_nodes:
+        dot.node(node)
     for target, sources in dependencies.items():
         for source in sources:
             dot.edge(source, target)
     return dot
 
-# --- GPT Explanation ---
-@st.cache_data(show_spinner=False)
-def call_openai(prompt, max_tokens=100):
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            max_tokens=max_tokens
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        return f"(Error: {e})"
-
-@st.cache_data(show_spinner=False)
-def generate_ai_outputs(named_refs):
-    results = []
-    for label, info in named_refs.items():
-        formulas = info.get("formulas", [])
-        combined_formula = " + ".join(formulas)
-        if not combined_formula:
-            doc = "No formula."
-            py = ""
-        else:
-            doc = call_openai(f"Explain this Excel formula:\n{combined_formula}")
-            py = call_openai(f"Translate this Excel formula to Python:\n{combined_formula}")
-        results.append({
-            "Named Reference": label,
-            "AI Documentation": doc,
-            "Excel Formula": combined_formula,
-            "Python Formula": py
-        })
-    return results
-
-# --- Markdown rendering ---
-def render_markdown_table(rows):
-    headers = ["Named Reference", "AI Documentation", "Excel Formula", "Python Formula"]
-    md = "| " + " | ".join(headers) + " |\n"
-    md += "| " + " | ".join(["---"] * len(headers)) + " |\n"
-    for row in rows:
-        md += "| " + " | ".join([
-            str(row["Named Reference"]),
-            str(row["AI Documentation"]).replace("\n", " "),
-            str(row["Excel Formula"]).replace("\n", " "),
-            str(row["Python Formula"]).replace("\n", " ")
-        ]) + " |\n"
-    return md
-
 # --- Streamlit UI ---
-st.title("📊 Excel Named Reference Dependency Viewer (with External Reference Cleaning)")
+st.title("📊 Full Excel Formula Dependency Auditor")
 
-uploaded_files = st.file_uploader("Upload Excel files (.xlsx)", type=["xlsx"], accept_multiple_files=True)
+uploaded_file = st.file_uploader("Upload an Excel (.xlsx) file", type=["xlsx"])
 
-if uploaded_files:
-    combined_named_refs = {}
+if uploaded_file:
+    try:
+        wb = load_workbook(io.BytesIO(uploaded_file.read()), data_only=False)
 
-    for uploaded_file in uploaded_files:
-        try:
-            wb = load_workbook(io.BytesIO(uploaded_file.read()), data_only=False)
-            refs = extract_named_references(wb, uploaded_file.name)
-            combined_named_refs.update(refs)
-        except Exception as e:
-            st.error(f"❌ Error reading {uploaded_file.name}: {e}")
-
-    if combined_named_refs:
-        st.subheader("📌 Named References Extracted")
-        st.json(combined_named_refs)
+        st.subheader("📌 Extracted Formulas")
+        all_formulas = extract_all_formulas(wb)
+        st.json(all_formulas)
 
         st.subheader("🔗 Dependency Graph")
-        dependencies = find_dependencies(combined_named_refs)
-        dot = create_dependency_graph(dependencies, combined_named_refs.keys())
+        dependencies = find_formula_dependencies(all_formulas)
+        dot = create_dependency_graph(dependencies, all_formulas.keys())
         st.graphviz_chart(dot)
 
-        st.subheader("🧠 AI-Generated Formula Explanations")
-        with st.spinner("Calling GPT-4..."):
-            rows = generate_ai_outputs(combined_named_refs)
-            st.markdown(render_markdown_table(rows), unsafe_allow_html=True)
-    else:
-        st.warning("No named references found.")
+    except Exception as e:
+        st.error(f"❌ Error processing file: {e}")
 else:
-    st.info("⬆️ Upload one or more `.xlsx` files to begin.")
+    st.info("⬆️ Upload a `.xlsx` file to begin.")
