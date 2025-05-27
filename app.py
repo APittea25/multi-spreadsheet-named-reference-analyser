@@ -15,6 +15,13 @@ if not openai_api_key:
     st.stop()
 client = OpenAI(api_key=openai_api_key)
 
+# --- Strip external and sheet references from formulas ---
+def simplify_formula(formula):
+    if not formula:
+        return ""
+    # Remove external workbook links and sheet names like: 'https://...xlsx'! or 'Sheet1'!
+    return re.sub(r"(?:'[^']*\.xlsx'!|'[^']*'!)", "", formula)
+
 # --- Extract named references from a workbook ---
 def extract_named_references(wb, file_label):
     named_refs = {}
@@ -33,11 +40,13 @@ def extract_named_references(wb, file_label):
                 }
                 try:
                     sheet = wb[sheet_name]
-                    cell_ref = ref.split('!')[-1]
-                    cell = sheet[cell_ref]
+                    # Handle ranges: take first cell (e.g., Table or A1:A10)
+                    first_cell = ref.split(":")[0].split("!")[-1].replace("$", "")
+                    cell = sheet[first_cell]
                     if cell.data_type == 'f':
-                        item["formula"] = cell.value
+                        item["formula"] = simplify_formula(cell.value)
                 except Exception:
+                    # Still add the item with no formula
                     pass
                 named_refs[label].append(item)
     return named_refs
@@ -57,7 +66,7 @@ def find_dependencies(named_refs):
                     dependencies[target_label].append(source_label)
     return dependencies
 
-# --- Create Graphviz dependency graph with all labels ---
+# --- Create Graphviz graph ---
 def create_dependency_graph(dependencies, all_labels):
     dot = graphviz.Digraph()
     for label in all_labels:
@@ -115,7 +124,7 @@ def render_markdown_table(rows):
     return md
 
 # --- Streamlit UI ---
-st.title("📊 Excel Named Reference Dependency Viewer (Multi-Workbook)")
+st.title("📊 Excel Named Reference Dependency Viewer (Enhanced)")
 
 uploaded_files = st.file_uploader("Upload one or more Excel (.xlsx) files", type=["xlsx"], accept_multiple_files=True)
 
