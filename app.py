@@ -5,7 +5,7 @@ import graphviz
 import io
 import re
 
-st.set_page_config(page_title="Multi-Workbook Named Reference Analyzer", layout="wide")
+st.set_page_config(page_title="Excel Named Reference Dependency Viewer", layout="wide")
 
 # --- OpenAI setup ---
 openai_api_key = st.secrets.get("OPENAI_API_KEY")
@@ -14,7 +14,7 @@ if not openai_api_key:
     st.stop()
 client = OpenAI(api_key=openai_api_key)
 
-# --- Extract named references from workbook ---
+# --- Extract named references from a workbook ---
 def extract_named_references(wb, file_label):
     named_refs = {}
     for name in wb.defined_names:
@@ -27,7 +27,7 @@ def extract_named_references(wb, file_label):
                     "ref": ref,
                     "formula": None,
                     "file": file_label,
-                    "pure_name": defined_name.name
+                    "label": defined_name.name  # the actual name used in formulas
                 }
                 try:
                     sheet = wb[sheet_name]
@@ -39,31 +39,29 @@ def extract_named_references(wb, file_label):
                     pass
     return named_refs
 
-# --- Detect dependencies using pure names in formulas ---
+# --- Detect dependencies: if a named reference is used in another formula, it's a dependency ---
 def find_dependencies(named_refs):
     dependencies = {}
+    all_names = list(named_refs.keys())
 
-    # Build a reverse map: pure_name → [full_names]
-    pure_to_full = {}
-    for full_name, info in named_refs.items():
-        pure = info["pure_name"].upper()
-        pure_to_full.setdefault(pure, []).append(full_name)
-
-    for current_full, info in named_refs.items():
+    for current_name, info in named_refs.items():
         formula = (info.get("formula") or "").upper()
         deps = []
 
-        for pure_name, full_names in pure_to_full.items():
-            if pure_name == info["pure_name"].upper():
+        for other_name in all_names:
+            if other_name == current_name:
                 continue
-            if re.search(rf"\b{re.escape(pure_name)}\b", formula):
-                deps.extend(full_names)
 
-        dependencies[current_full] = deps
+            other_label = named_refs[other_name]["label"].upper()
+
+            if re.search(rf"\b{re.escape(other_label)}\b", formula):
+                deps.append(other_name)
+
+        dependencies[current_name] = deps
 
     return dependencies
 
-# --- Create a Graphviz graph ---
+# --- Graphviz graph generation ---
 def create_dependency_graph(dependencies):
     dot = graphviz.Digraph()
     for node in dependencies:
@@ -73,7 +71,7 @@ def create_dependency_graph(dependencies):
             dot.edge(dep, node)
     return dot
 
-# --- OpenAI: Explain formula ---
+# --- GPT explanation functions ---
 @st.cache_data(show_spinner=False)
 def call_openai(prompt, max_tokens=100):
     try:
@@ -87,7 +85,6 @@ def call_openai(prompt, max_tokens=100):
     except Exception as e:
         return f"(Error: {e})"
 
-# --- Generate AI documentation and Python translations ---
 @st.cache_data(show_spinner=False)
 def generate_ai_outputs(named_refs):
     results = []
@@ -107,7 +104,7 @@ def generate_ai_outputs(named_refs):
         })
     return results
 
-# --- Render markdown table ---
+# --- Markdown table rendering ---
 def render_markdown_table(rows):
     headers = ["Named Reference", "AI Documentation", "Excel Formula", "Python Formula"]
     md = "| " + " | ".join(headers) + " |\n"
@@ -138,7 +135,7 @@ if uploaded_files:
             st.error(f"❌ Error reading {uploaded_file.name}: {e}")
 
     if combined_named_refs:
-        st.subheader("📌 Named References Found")
+        st.subheader("📌 Named References Extracted")
         st.json(combined_named_refs)
 
         st.subheader("🔗 Dependency Graph")
@@ -146,11 +143,11 @@ if uploaded_files:
         dot = create_dependency_graph(dependencies)
         st.graphviz_chart(dot)
 
-        st.subheader("🧠 AI-Generated Explanations")
-        with st.spinner("Calling GPT-4 for documentation..."):
+        st.subheader("🧠 AI Explanations")
+        with st.spinner("Calling GPT-4..."):
             rows = generate_ai_outputs(combined_named_refs)
             st.markdown(render_markdown_table(rows), unsafe_allow_html=True)
     else:
         st.warning("No named references found.")
 else:
-    st.info("⬆️ Upload `.xlsx` files to begin.")
+    st.info("⬆️ Upload one or more `.xlsx` files to begin.")
