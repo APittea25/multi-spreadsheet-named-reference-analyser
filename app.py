@@ -23,7 +23,7 @@ def simplify_formula(formula):
     formula = re.sub(r"\[[^\]]+\][^!]*!", "", formula)
     return formula
 
-# --- Extract named references with formula fallback logic ---
+# --- Extract named references with reliable formula handling ---
 def extract_named_references(wb, file_label):
     named_refs = {}
 
@@ -54,12 +54,14 @@ def extract_named_references(wb, file_label):
                     st.write(f"⚠️ `{label}` at `{sheet_name}!{top_left_cell}` has no formula. Value = `{cell.value}`")
                     formulas = []
 
+                # ✅ Only assign once formula(s) is fully processed
                 named_refs[label] = {
                     "sheet": sheet_name,
                     "ref": ref,
                     "formulas": formulas,
                     "file": file_label
                 }
+
             except Exception as e:
                 st.write(f"❌ Error processing `{label}` → {e}")
 
@@ -139,7 +141,7 @@ def render_markdown_table(rows):
     return md
 
 # --- Streamlit UI ---
-st.title("📊 Excel Named Reference Dependency Viewer (Cloud-Safe)")
+st.title("📊 Excel Named Reference Dependency Viewer (Stable Formula Output)")
 
 uploaded_files = st.file_uploader("Upload Excel files (.xlsx)", type=["xlsx"], accept_multiple_files=True)
 
