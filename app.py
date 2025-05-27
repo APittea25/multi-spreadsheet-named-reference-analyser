@@ -27,7 +27,7 @@ def extract_named_references(wb, file_label):
                     "ref": ref,
                     "formula": None,
                     "file": file_label,
-                    "label": defined_name.name  # the actual name used in formulas
+                    "label": defined_name.name  # used in formulas
                 }
                 try:
                     sheet = wb[sheet_name]
@@ -39,29 +39,29 @@ def extract_named_references(wb, file_label):
                     pass
     return named_refs
 
-# --- Detect dependencies: if a named reference is used in another formula, it's a dependency ---
+# --- Detect dependencies based on label mentions in formulas ---
 def find_dependencies(named_refs):
     dependencies = {}
-    all_names = list(named_refs.keys())
 
-    for current_name, info in named_refs.items():
-        formula = (info.get("formula") or "").upper()
+    # label → full_name
+    label_to_full = {info["label"]: full_name for full_name, info in named_refs.items()}
+
+    for full_name, info in named_refs.items():
+        formula = (info.get("formula") or "")
         deps = []
 
-        for other_name in all_names:
-            if other_name == current_name:
+        for other_label, other_full in label_to_full.items():
+            if other_full == full_name:
                 continue
 
-            other_label = named_refs[other_name]["label"].upper()
-
             if re.search(rf"\b{re.escape(other_label)}\b", formula):
-                deps.append(other_name)
+                deps.append(other_full)
 
-        dependencies[current_name] = deps
+        dependencies[full_name] = deps
 
     return dependencies
 
-# --- Graphviz graph generation ---
+# --- Create Graphviz graph ---
 def create_dependency_graph(dependencies):
     dot = graphviz.Digraph()
     for node in dependencies:
@@ -71,7 +71,7 @@ def create_dependency_graph(dependencies):
             dot.edge(dep, node)
     return dot
 
-# --- GPT explanation functions ---
+# --- GPT explanation ---
 @st.cache_data(show_spinner=False)
 def call_openai(prompt, max_tokens=100):
     try:
@@ -104,7 +104,7 @@ def generate_ai_outputs(named_refs):
         })
     return results
 
-# --- Markdown table rendering ---
+# --- Markdown table ---
 def render_markdown_table(rows):
     headers = ["Named Reference", "AI Documentation", "Excel Formula", "Python Formula"]
     md = "| " + " | ".join(headers) + " |\n"
@@ -143,7 +143,7 @@ if uploaded_files:
         dot = create_dependency_graph(dependencies)
         st.graphviz_chart(dot)
 
-        st.subheader("🧠 AI Explanations")
+        st.subheader("🧠 AI-Generated Formula Explanations")
         with st.spinner("Calling GPT-4..."):
             rows = generate_ai_outputs(combined_named_refs)
             st.markdown(render_markdown_table(rows), unsafe_allow_html=True)
