@@ -138,65 +138,6 @@ def render_markdown_table(rows):
         ]) + " |\n"
     return md
 
-# --- NEW SECTION: Recreate Spreadsheet Calculations in Python ---
-def topological_sort(dependencies):
-    from collections import defaultdict, deque
-
-    in_degree = defaultdict(int)
-    graph = defaultdict(list)
-
-    for node in dependencies:
-        for dep in dependencies[node]:
-            graph[dep].append(node)
-            in_degree[node] += 1
-
-    queue = deque([n for n in dependencies if in_degree[n] == 0])
-    sorted_order = []
-
-    while queue:
-        node = queue.popleft()
-        sorted_order.append(node)
-        for neighbor in graph[node]:
-            in_degree[neighbor] -= 1
-            if in_degree[neighbor] == 0:
-                queue.append(neighbor)
-
-    return sorted_order
-
-
-def generate_end_to_end_python(named_refs, dependencies):
-    order = topological_sort(dependencies)
-    lines = ["# Full spreadsheet logic recreated in Python"]
-
-    for name in order:
-        formula = " + ".join(named_refs[name].get("formulas", []))
-        if formula:
-            lines.append(f"# {name}")
-            lines.append(f"# Excel: {formula}")
-        else:
-            lines.append(f"# {name} is likely an input")
-            lines.append(f"{name} = ...")
-            lines.append("")
-            continue
-
-        context = "\n".join(
-            f"{n}: {named_refs[n].get('formulas', [''])[0]}" for n in order if n != name
-        )
-
-        full_prompt = (
-            f"You are recreating a spreadsheet in Python. Here are the named references and formulas:\n"
-            f"{context}\n\n"
-            f"Now translate the formula for '{name}':\n{formula}\n"
-            f"Return only the Python expression for {name}."
-        )
-
-        python_translation = call_openai(full_prompt, max_tokens=200)
-        st.write(f"🧠 {name} = {python_translation}")
-        lines.append(f"{name} = {python_translation}")
-        lines.append("")
-
-    return "\n".join(lines)
-
 # --- Streamlit UI ---
 st.title("📊 Excel Named Reference Dependency Viewer (Cloud-Safe)")
 
@@ -226,11 +167,6 @@ if uploaded_files:
         with st.spinner("Calling GPT-4..."):
             rows = generate_ai_outputs(combined_named_refs)
             st.markdown(render_markdown_table(rows), unsafe_allow_html=True)
-
-        st.subheader("🧮 End-to-End Spreadsheet Logic in Python")
-        with st.spinner("Generating full procedural script from GPT..."):
-            final_script = generate_end_to_end_python(combined_named_refs, dependencies)
-            st.code(final_script, language="python")
 
     else:
         st.warning("No named references found.")
