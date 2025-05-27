@@ -15,12 +15,14 @@ if not openai_api_key:
     st.stop()
 client = OpenAI(api_key=openai_api_key)
 
-# --- Simplify external references ---
+# --- Enhanced formula cleaner ---
 def simplify_formula(formula):
     if not formula:
         return ""
-    # Remove any quoted external file references ending in .xlsx'!
-    return re.sub(r"'[^']+\.xlsx'!", "", formula)
+    # Remove local file paths and SharePoint-style or bracketed links
+    formula = re.sub(r"'[^']+\.xlsx'!", "", formula)           # 'C:\...file.xlsx'!
+    formula = re.sub(r"\[[^\]]+\][^!]*!", "", formula)         # [file.xlsx]Sheet!
+    return formula
 
 # --- Extract named references using top-left cell only ---
 def extract_named_references(wb, file_label):
@@ -50,7 +52,7 @@ def extract_named_references(wb, file_label):
 
     return named_refs
 
-# --- Dependency detection ---
+# --- Find dependencies based on simplified formulas ---
 def find_dependencies(named_refs):
     dependencies = defaultdict(list)
     all_labels = list(named_refs.keys())
@@ -124,7 +126,7 @@ def render_markdown_table(rows):
     return md
 
 # --- Streamlit UI ---
-st.title("📊 Excel Named Reference Dependency Viewer (Top-Left Cell Only)")
+st.title("📊 Excel Named Reference Dependency Viewer (with Formula Simplifier)")
 
 uploaded_files = st.file_uploader("Upload Excel files (.xlsx)", type=["xlsx"], accept_multiple_files=True)
 
