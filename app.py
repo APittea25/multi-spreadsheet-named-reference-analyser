@@ -4,12 +4,17 @@ from openpyxl import load_workbook
 import graphviz
 import io
 
-st.set_page_config(page_title="Excel Named Range Visualizer", layout="wide")
+st.set_page_config(page_title="Excel Named Reference Analyzer", layout="wide")
 
 # Initialize OpenAI client
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+openai_api_key = st.secrets.get("OPENAI_API_KEY")
+if not openai_api_key:
+    st.error("❌ OPENAI_API_KEY not found in Streamlit secrets.")
+    st.stop()
 
-# --- Extract named references from a single workbook ---
+client = OpenAI(api_key=openai_api_key)
+
+# --- Extract named references from a workbook ---
 def extract_named_references(wb, file_label):
     named_refs = {}
     for name in wb.defined_names:
@@ -17,12 +22,13 @@ def extract_named_references(wb, file_label):
         if defined_name.attr_text and not defined_name.is_external:
             dests = list(defined_name.destinations)
             for sheet_name, ref in dests:
-                full_name = f"{file_label}::{defined_name.name}"  # Unique name per file
+                full_name = f"{file_label}::{defined_name.name}"
                 named_refs[full_name] = {
                     "sheet": sheet_name,
                     "ref": ref,
                     "formula": None,
-                    "file": file_label
+                    "file": file_label,
+                    "pure_name": defined_name.name
                 }
                 try:
                     sheet = wb[sheet_name]
@@ -34,21 +40,29 @@ def extract_named_references(wb, file_label):
                     pass
     return named_refs
 
-# --- Detect dependencies between named references ---
+# --- Detect named reference dependencies ---
 def find_dependencies(named_refs):
     dependencies = {}
-    all_names = list(named_refs.keys())
+    all_refs = list(named_refs.items())  # (full_name, info)
+
     for name, info in named_refs.items():
-        formula = info.get("formula", "")
-        if formula:
-            formula = formula.upper()
-            deps = [other for other in all_names if other != name and other.split("::")[-1].upper() in formula]
-            dependencies[name] = deps
-        else:
-            dependencies[name] = []
+        formula = info.get("formula", "") or ""
+        formula_upper = formula.upper()
+        deps = []
+
+        for other_name, other_info in all_refs:
+            if other_name == name:
+                continue
+
+            # Check if formula contains the NAME (not the full qualified one)
+            other_pure = other_info["pure_name"].upper()
+            if other_pure in formula_upper:
+                deps.append(other_name)
+
+        dependencies[name] = deps
     return dependencies
 
-# --- Create Graphviz dependency graph ---
+# --- Create a dependency graph ---
 def create_dependency_graph(dependencies):
     dot = graphviz.Digraph()
     for ref in dependencies:
@@ -58,7 +72,7 @@ def create_dependency_graph(dependencies):
             dot.edge(dep, ref)
     return dot
 
-# --- Call OpenAI GPT for formula interpretation ---
+# --- Call OpenAI GPT ---
 @st.cache_data(show_spinner=False)
 def call_openai(prompt, max_tokens=100):
     try:
@@ -72,7 +86,7 @@ def call_openai(prompt, max_tokens=100):
     except Exception as e:
         return f"(Error: {e})"
 
-# --- Generate AI explanations ---
+# --- Generate AI documentation ---
 @st.cache_data(show_spinner=False)
 def generate_ai_outputs(named_refs):
     results = []
@@ -95,7 +109,7 @@ def generate_ai_outputs(named_refs):
         })
     return results
 
-# --- Markdown table formatter ---
+# --- Render Markdown table ---
 def render_markdown_table(rows):
     headers = ["Named Reference", "AI Documentation", "Excel Formula", "Python Formula"]
     md = "| " + " | ".join(headers) + " |\n"
@@ -110,7 +124,7 @@ def render_markdown_table(rows):
     return md
 
 # --- Streamlit UI ---
-st.title("📊 Multi-Workbook Named Range Dependency Viewer with AI")
+st.title("📊 Multi-Workbook Named Reference Dependency Viewer")
 
 uploaded_files = st.file_uploader("Upload one or more Excel (.xlsx) files", type=["xlsx"], accept_multiple_files=True)
 
@@ -126,19 +140,20 @@ if uploaded_files:
             st.error(f"❌ Failed to process {uploaded_file.name}: {e}")
 
     if combined_named_refs:
-        st.subheader("📌 Named References Across Files")
+        st.subheader("📌 Named References")
         st.json(combined_named_refs)
 
-        st.subheader("🔗 Cross-Workbook Dependency Graph")
+        st.subheader("🔗 Dependency Graph (based on formula usage of names)")
         dependencies = find_dependencies(combined_named_refs)
         dot = create_dependency_graph(dependencies)
         st.graphviz_chart(dot)
 
-        st.subheader("🧠 AI-Generated Documentation and Python Translations")
-        with st.spinner("Generating AI explanations using GPT..."):
+        st.subheader("🧠 AI-Generated Documentation & Python Translations")
+        with st.spinner("Getting explanations from GPT..."):
             table_rows = generate_ai_outputs(combined_named_refs)
             st.markdown(render_markdown_table(table_rows), unsafe_allow_html=True)
+
     else:
-        st.warning("⚠️ No named references were found in the uploaded files.")
+        st.warning("⚠️ No named references found in uploaded files.")
 else:
-    st.info("⬆️ Please upload one or more `.xlsx` Excel files to begin.")
+    st.info("⬆️ Upload one or more `.xlsx` files to begin.")
