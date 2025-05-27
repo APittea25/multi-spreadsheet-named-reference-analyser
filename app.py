@@ -5,7 +5,7 @@ import graphviz
 import io
 import re
 
-st.set_page_config(page_title="Excel Named Reference Dependency Viewer", layout="wide")
+st.set_page_config(page_title="Named Reference Dependency Viewer", layout="wide")
 
 # --- OpenAI setup ---
 openai_api_key = st.secrets.get("OPENAI_API_KEY")
@@ -14,55 +14,50 @@ if not openai_api_key:
     st.stop()
 client = OpenAI(api_key=openai_api_key)
 
-# --- Extract named references from workbook ---
-def extract_named_references(wb, file_label):
+# --- Extract named references (labels only) ---
+def extract_named_references(wb):
     named_refs = {}
     for name in wb.defined_names:
         defined_name = wb.defined_names[name]
         if defined_name.attr_text and not defined_name.is_external:
             for sheet_name, ref in defined_name.destinations:
-                full_name = f"{file_label}::{defined_name.name}"
-                named_refs[full_name] = {
+                label = defined_name.name
+                named_refs[label] = {
                     "sheet": sheet_name,
                     "ref": ref,
                     "formula": None,
-                    "file": file_label,
-                    "label": defined_name.name  # used in formula detection
                 }
                 try:
                     sheet = wb[sheet_name]
                     cell_ref = ref.split('!')[-1]
                     cell = sheet[cell_ref]
                     if cell.data_type == 'f':
-                        named_refs[full_name]["formula"] = cell.value
+                        named_refs[label]["formula"] = cell.value
                 except Exception:
                     pass
     return named_refs
 
-# --- Detect dependencies by name appearance in formula ---
+# --- Find dependencies based on formula references ---
 def find_dependencies(named_refs):
     dependencies = {}
+    all_labels = list(named_refs.keys())
 
-    # Map label (e.g., "Total_Payments") → full_name (e.g., "file.xlsx::Total_Payments")
-    label_to_full = {info["label"]: full_name for full_name, info in named_refs.items()}
-
-    for full_name, info in named_refs.items():
+    for target_label, info in named_refs.items():
         formula = (info.get("formula") or "")
         deps = []
 
-        for other_label, other_full in label_to_full.items():
-            if other_full == full_name:
+        for source_label in all_labels:
+            if source_label == target_label:
                 continue
 
-            # Match the label name in the formula
-            if re.search(rf"\b{re.escape(other_label)}\b", formula):
-                deps.append(other_full)
+            if re.search(rf"\b{re.escape(source_label)}\b", formula):
+                deps.append(source_label)
 
-        dependencies[full_name] = deps
+        dependencies[target_label] = deps
 
     return dependencies
 
-# --- Build graphviz graph ---
+# --- Create Graphviz graph (label → label) ---
 def create_dependency_graph(dependencies):
     dot = graphviz.Digraph()
     for node in dependencies:
@@ -72,7 +67,7 @@ def create_dependency_graph(dependencies):
             dot.edge(dep, node)
     return dot
 
-# --- GPT explanation logic ---
+# --- GPT explanations ---
 @st.cache_data(show_spinner=False)
 def call_openai(prompt, max_tokens=100):
     try:
@@ -89,7 +84,7 @@ def call_openai(prompt, max_tokens=100):
 @st.cache_data(show_spinner=False)
 def generate_ai_outputs(named_refs):
     results = []
-    for name, info in named_refs.items():
+    for label, info in named_refs.items():
         formula = info.get("formula", "")
         if not formula:
             doc = "No formula."
@@ -98,7 +93,7 @@ def generate_ai_outputs(named_refs):
             doc = call_openai(f"Explain this Excel formula:\n{formula}")
             py = call_openai(f"Translate this Excel formula to Python:\n{formula}")
         results.append({
-            "Named Reference": name,
+            "Named Reference": label,
             "AI Documentation": doc,
             "Excel Formula": formula,
             "Python Formula": py
@@ -119,36 +114,30 @@ def render_markdown_table(rows):
         ]) + " |\n"
     return md
 
-# --- UI ---
-st.title("📊 Excel Named Reference Dependency Viewer (Multi-Workbook)")
+# --- Streamlit UI ---
+st.title("📊 Excel Named Reference Dependency Viewer (Simplified, No File Prefix)")
 
-uploaded_files = st.file_uploader("Upload Excel files (.xlsx)", type=["xlsx"], accept_multiple_files=True)
+uploaded_file = st.file_uploader("Upload an Excel (.xlsx) file", type=["xlsx"])
 
-if uploaded_files:
-    combined_named_refs = {}
+if uploaded_file:
+    try:
+        wb = load_workbook(io.BytesIO(uploaded_file.read()), data_only=False)
+        named_refs = extract_named_references(wb)
 
-    for uploaded_file in uploaded_files:
-        try:
-            wb = load_workbook(io.BytesIO(uploaded_file.read()), data_only=False)
-            refs = extract_named_references(wb, uploaded_file.name)
-            combined_named_refs.update(refs)
-        except Exception as e:
-            st.error(f"❌ Error reading {uploaded_file.name}: {e}")
-
-    if combined_named_refs:
-        st.subheader("📌 Extracted Named References")
-        st.json(combined_named_refs)
+        st.subheader("📌 Named References Extracted")
+        st.json(named_refs)
 
         st.subheader("🔗 Dependency Graph")
-        dependencies = find_dependencies(combined_named_refs)
+        dependencies = find_dependencies(named_refs)
         dot = create_dependency_graph(dependencies)
         st.graphviz_chart(dot)
 
         st.subheader("🧠 AI Formula Explanations")
-        with st.spinner("Generating GPT-4 summaries..."):
-            rows = generate_ai_outputs(combined_named_refs)
+        with st.spinner("Calling GPT-4..."):
+            rows = generate_ai_outputs(named_refs)
             st.markdown(render_markdown_table(rows), unsafe_allow_html=True)
-    else:
-        st.warning("⚠️ No named references found.")
+
+    except Exception as e:
+        st.error(f"❌ Error processing file: {e}")
 else:
-    st.info("⬆️ Upload one or more `.xlsx` files to begin.")
+    st.info("⬆️ Upload a `.xlsx` file to begin.")
