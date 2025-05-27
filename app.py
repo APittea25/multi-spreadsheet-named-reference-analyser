@@ -17,7 +17,7 @@ def extract_named_references(wb, file_label):
         if defined_name.attr_text and not defined_name.is_external:
             dests = list(defined_name.destinations)
             for sheet_name, ref in dests:
-                full_name = f"{file_label}::{defined_name.name}"  # Scoped by file
+                full_name = f"{file_label}::{defined_name.name}"  # Unique name per file
                 named_refs[full_name] = {
                     "sheet": sheet_name,
                     "ref": ref,
@@ -48,7 +48,7 @@ def find_dependencies(named_refs):
             dependencies[name] = []
     return dependencies
 
-# --- Create dependency graph ---
+# --- Create Graphviz dependency graph ---
 def create_dependency_graph(dependencies):
     dot = graphviz.Digraph()
     for ref in dependencies:
@@ -58,7 +58,7 @@ def create_dependency_graph(dependencies):
             dot.edge(dep, ref)
     return dot
 
-# --- Call OpenAI GPT ---
+# --- Call OpenAI GPT for formula interpretation ---
 @st.cache_data(show_spinner=False)
 def call_openai(prompt, max_tokens=100):
     try:
@@ -72,7 +72,7 @@ def call_openai(prompt, max_tokens=100):
     except Exception as e:
         return f"(Error: {e})"
 
-# --- AI documentation ---
+# --- Generate AI explanations ---
 @st.cache_data(show_spinner=False)
 def generate_ai_outputs(named_refs):
     results = []
@@ -95,7 +95,7 @@ def generate_ai_outputs(named_refs):
         })
     return results
 
-# --- Markdown output ---
+# --- Markdown table formatter ---
 def render_markdown_table(rows):
     headers = ["Named Reference", "AI Documentation", "Excel Formula", "Python Formula"]
     md = "| " + " | ".join(headers) + " |\n"
@@ -109,7 +109,7 @@ def render_markdown_table(rows):
         ]) + " |\n"
     return md
 
-# --- UI ---
+# --- Streamlit UI ---
 st.title("📊 Multi-Workbook Named Range Dependency Viewer with AI")
 
 uploaded_files = st.file_uploader("Upload one or more Excel (.xlsx) files", type=["xlsx"], accept_multiple_files=True)
@@ -135,11 +135,10 @@ if uploaded_files:
         st.graphviz_chart(dot)
 
         st.subheader("🧠 AI-Generated Documentation and Python Translations")
-        with st.spinner("Generating AI descriptions..."):
+        with st.spinner("Generating AI explanations using GPT..."):
             table_rows = generate_ai_outputs(combined_named_refs)
             st.markdown(render_markdown_table(table_rows), unsafe_allow_html=True)
-
     else:
-        st.warning("No named references were found in the uploaded files.")
+        st.warning("⚠️ No named references were found in the uploaded files.")
 else:
     st.info("⬆️ Please upload one or more `.xlsx` Excel files to begin.")
