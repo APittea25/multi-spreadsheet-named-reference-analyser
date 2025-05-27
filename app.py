@@ -27,11 +27,12 @@ def simplify_formula(formula):
 def extract_named_references(wb, file_label):
     named_refs = {}
 
-    for name in wb.defined_names.definedName:
-        if name.is_external or not name.attr_text:
+    for name in wb.defined_names:
+        dn = wb.defined_names[name]
+        if dn.is_external or not dn.attr_text:
             continue
-        for sheet_name, ref in name.destinations:
-            label = name.name
+        for sheet_name, ref in dn.destinations:
+            label = name
             try:
                 sheet = wb[sheet_name]
                 coord = ref.replace("$", "").split("!")[-1]
@@ -132,7 +133,7 @@ def render_markdown_table(rows):
     return md
 
 # --- Streamlit UI ---
-st.title("📊 Excel Named Reference Dependency Viewer (Debug Mode)")
+st.title("📊 Excel Named Reference Dependency Viewer (Debug Mode Fixed)")
 
 uploaded_files = st.file_uploader("Upload Excel files (.xlsx)", type=["xlsx"], accept_multiple_files=True)
 
