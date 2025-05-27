@@ -6,7 +6,7 @@ import io
 import re
 from collections import defaultdict
 
-st.set_page_config(page_title="Excel Named Reference Dependency Viewer", layout="wide")
+st.set_page_config(page_title="Named Reference Dependency Viewer", layout="wide")
 
 # --- OpenAI setup ---
 openai_api_key = st.secrets.get("OPENAI_API_KEY")
@@ -15,56 +15,63 @@ if not openai_api_key:
     st.stop()
 client = OpenAI(api_key=openai_api_key)
 
-# --- Simplify formulas by removing external workbook and sheet links ---
+# --- Simplify external references like 'C:\path\file.xlsx'!Name or '[file.xlsx]Sheet'!Name ---
 def simplify_formula(formula):
     if not formula:
         return ""
+    # Remove external references and sheet names
     return re.sub(r"(?:'[^']*\.xlsx'!|'[^']*'!)", "", formula)
 
-# --- Extract named references from workbook ---
+# --- Extract named references and their formulas from workbook ---
 def extract_named_references(wb, file_label):
     named_refs = {}
+
     for name in wb.defined_names:
-        defined_name = wb.defined_names[name]
-        if defined_name.attr_text and not defined_name.is_external:
-            for sheet_name, ref in defined_name.destinations:
-                label = defined_name.name
-                if label not in named_refs:
-                    named_refs[label] = []
-                item = {
-                    "sheet": sheet_name,
-                    "ref": ref,
-                    "formula": None,
-                    "file": file_label
-                }
+        dn = wb.defined_names[name]
+        if dn.attr_text and not dn.is_external:
+            for sheet_name, ref in dn.destinations:
+                sheet = wb[sheet_name]
+                label = name
                 try:
-                    sheet = wb[sheet_name]
-                    first_cell = ref.split(":")[0].split("!")[-1].replace("$", "")
-                    cell = sheet[first_cell]
-                    raw_value = str(cell.value or "")
-                    if raw_value.strip().startswith("="):
-                        item["formula"] = simplify_formula(raw_value.strip())
+                    coord = ref.replace("$", "").split("!")[-1]
+                    cell_range = sheet[coord]
+                    # Support single cell or ranges
+                    cells = cell_range if isinstance(cell_range, tuple) else [[cell_range]]
+
+                    formulas = []
+                    for row in cells:
+                        for cell in row:
+                            raw_value = str(cell.value or "").strip()
+                            if raw_value.startswith("="):
+                                formulas.append(simplify_formula(raw_value))
+
+                    named_refs[label] = {
+                        "sheet": sheet_name,
+                        "ref": ref,
+                        "formulas": formulas,
+                        "file": file_label
+                    }
                 except Exception:
                     pass
-                named_refs[label].append(item)
+
     return named_refs
 
-# --- Find dependencies based on names used in formulas ---
+# --- Find dependencies based on presence of other named references in formulas ---
 def find_dependencies(named_refs):
     dependencies = defaultdict(list)
-    labels = list(named_refs.keys())
+    all_labels = list(named_refs.keys())
 
-    for target_label in labels:
-        for instance in named_refs[target_label]:
-            formula = (instance.get("formula") or "")
-            for source_label in labels:
-                if source_label == target_label:
-                    continue
-                if re.search(rf"\b{re.escape(source_label)}\b", formula):
-                    dependencies[target_label].append(source_label)
+    for target_label, info in named_refs.items():
+        formula_text = " ".join(info.get("formulas", []))
+        for other_label in all_labels:
+            if other_label == target_label:
+                continue
+            if re.search(rf"\b{re.escape(other_label)}\b", formula_text):
+                dependencies[target_label].append(other_label)
+
     return dependencies
 
-# --- Create graph showing all references + arrows for dependencies ---
+# --- Graph construction ---
 def create_dependency_graph(dependencies, all_labels):
     dot = graphviz.Digraph()
     for label in all_labels:
@@ -74,7 +81,7 @@ def create_dependency_graph(dependencies, all_labels):
             dot.edge(source, target)
     return dot
 
-# --- GPT-4 formula explanations ---
+# --- GPT Explanation ---
 @st.cache_data(show_spinner=False)
 def call_openai(prompt, max_tokens=100):
     try:
@@ -91,23 +98,24 @@ def call_openai(prompt, max_tokens=100):
 @st.cache_data(show_spinner=False)
 def generate_ai_outputs(named_refs):
     results = []
-    for label, instances in named_refs.items():
-        formula = instances[0].get("formula", "") if instances else ""
-        if not formula:
+    for label, info in named_refs.items():
+        formulas = info.get("formulas", [])
+        combined_formula = " + ".join(formulas)
+        if not combined_formula:
             doc = "No formula."
             py = ""
         else:
-            doc = call_openai(f"Explain this Excel formula:\n{formula}")
-            py = call_openai(f"Translate this Excel formula to Python:\n{formula}")
+            doc = call_openai(f"Explain this Excel formula:\n{combined_formula}")
+            py = call_openai(f"Translate this Excel formula to Python:\n{combined_formula}")
         results.append({
             "Named Reference": label,
             "AI Documentation": doc,
-            "Excel Formula": formula,
+            "Excel Formula": combined_formula,
             "Python Formula": py
         })
     return results
 
-# --- Render Markdown table ---
+# --- Markdown rendering ---
 def render_markdown_table(rows):
     headers = ["Named Reference", "AI Documentation", "Excel Formula", "Python Formula"]
     md = "| " + " | ".join(headers) + " |\n"
@@ -122,21 +130,18 @@ def render_markdown_table(rows):
     return md
 
 # --- Streamlit UI ---
-st.title("📊 Excel Named Reference Dependency Viewer (Multi-Workbook + External Fixes)")
+st.title("📊 Excel Named Reference Dependency Viewer (with External Reference Cleaning)")
 
 uploaded_files = st.file_uploader("Upload Excel files (.xlsx)", type=["xlsx"], accept_multiple_files=True)
 
 if uploaded_files:
-    combined_named_refs = defaultdict(list)
-    collision_tracker = defaultdict(set)
+    combined_named_refs = {}
 
     for uploaded_file in uploaded_files:
         try:
             wb = load_workbook(io.BytesIO(uploaded_file.read()), data_only=False)
             refs = extract_named_references(wb, uploaded_file.name)
-            for label, entries in refs.items():
-                combined_named_refs[label].extend(entries)
-                collision_tracker[label].add(uploaded_file.name)
+            combined_named_refs.update(refs)
         except Exception as e:
             st.error(f"❌ Error reading {uploaded_file.name}: {e}")
 
@@ -144,17 +149,12 @@ if uploaded_files:
         st.subheader("📌 Named References Extracted")
         st.json(combined_named_refs)
 
-        collisions = {k: list(v) for k, v in collision_tracker.items() if len(v) > 1}
-        if collisions:
-            st.warning("⚠️ Naming collisions detected across files:")
-            st.json(collisions)
-
         st.subheader("🔗 Dependency Graph")
         dependencies = find_dependencies(combined_named_refs)
         dot = create_dependency_graph(dependencies, combined_named_refs.keys())
         st.graphviz_chart(dot)
 
-        st.subheader("🧠 AI Formula Explanations")
+        st.subheader("🧠 AI-Generated Formula Explanations")
         with st.spinner("Calling GPT-4..."):
             rows = generate_ai_outputs(combined_named_refs)
             st.markdown(render_markdown_table(rows), unsafe_allow_html=True)
