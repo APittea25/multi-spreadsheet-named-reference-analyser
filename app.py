@@ -54,7 +54,6 @@ def extract_named_references(wb, file_label):
                     st.write(f"⚠️ `{label}` at `{sheet_name}!{top_left_cell}` has no formula. Value = `{cell.value}`")
                     formulas = []
 
-                # ✅ Only assign once formula(s) is fully processed
                 named_refs[label] = {
                     "sheet": sheet_name,
                     "ref": ref,
@@ -140,8 +139,54 @@ def render_markdown_table(rows):
         ]) + " |\n"
     return md
 
+# --- NEW SECTION: Recreate Spreadsheet Calculations in Python ---
+def topological_sort(dependencies):
+    from collections import defaultdict, deque
+
+    in_degree = defaultdict(int)
+    graph = defaultdict(list)
+
+    for node in dependencies:
+        for dep in dependencies[node]:
+            graph[dep].append(node)
+            in_degree[node] += 1
+
+    queue = deque([n for n in dependencies if in_degree[n] == 0])
+    sorted_order = []
+
+    while queue:
+        node = queue.popleft()
+        sorted_order.append(node)
+        for neighbor in graph[node]:
+            in_degree[neighbor] -= 1
+            if in_degree[neighbor] == 0:
+                queue.append(neighbor)
+
+    return sorted_order
+
+
+def generate_python_script(named_refs, dependencies):
+    order = topological_sort(dependencies)
+    lines = ["# Auto-generated Python logic to recreate spreadsheet"]
+
+    for name in order:
+        formula = " + ".join(named_refs[name].get("formulas", []))
+        if formula:
+            python_translation = call_openai(
+                f"Convert the following Excel formula to Python:\n{formula}"
+            )
+            lines.append(f"# {name}")
+            lines.append(f"{name} = {python_translation}")
+            lines.append("")
+        else:
+            lines.append(f"# {name} has no formula and may be an input")
+            lines.append(f"{name} = ...")
+            lines.append("")
+
+    return "\n".join(lines)
+
 # --- Streamlit UI ---
-st.title("📊 Excel Named Reference Dependency Viewer (Stable Formula Output)")
+st.title("📊 Excel Named Reference Dependency Viewer (Cloud-Safe)")
 
 uploaded_files = st.file_uploader("Upload Excel files (.xlsx)", type=["xlsx"], accept_multiple_files=True)
 
@@ -169,6 +214,11 @@ if uploaded_files:
         with st.spinner("Calling GPT-4..."):
             rows = generate_ai_outputs(combined_named_refs)
             st.markdown(render_markdown_table(rows), unsafe_allow_html=True)
+
+        st.subheader("🧪 Recreate Spreadsheet in Python")
+        with st.spinner("Generating executable Python script..."):
+            python_code = generate_python_script(combined_named_refs, dependencies)
+            st.code(python_code, language="python")
     else:
         st.warning("No named references found.")
 else:
