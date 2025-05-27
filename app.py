@@ -15,44 +15,50 @@ if not openai_api_key:
     st.stop()
 client = OpenAI(api_key=openai_api_key)
 
-# --- Enhanced formula cleaner ---
+# --- Formula cleaner ---
 def simplify_formula(formula):
     if not formula:
         return ""
-    # Remove local file paths and SharePoint-style or bracketed links
-    formula = re.sub(r"'[^']+\.xlsx'!", "", formula)           # 'C:\...file.xlsx'!
-    formula = re.sub(r"\[[^\]]+\][^!]*!", "", formula)         # [file.xlsx]Sheet!
+    formula = re.sub(r"'[^']+\.xlsx'!", "", formula)
+    formula = re.sub(r"\[[^\]]+\][^!]*!", "", formula)
     return formula
 
-# --- Extract named references using top-left cell only ---
+# --- Extract named references using top-left cell only (with debug output) ---
 def extract_named_references(wb, file_label):
     named_refs = {}
 
-    for name in wb.defined_names:
-        dn = wb.defined_names[name]
-        if dn.attr_text and not dn.is_external:
-            for sheet_name, ref in dn.destinations:
+    for name in wb.defined_names.definedName:
+        if name.is_external or not name.attr_text:
+            continue
+        for sheet_name, ref in name.destinations:
+            label = name.name
+            try:
                 sheet = wb[sheet_name]
-                label = name
-                try:
-                    coord = ref.replace("$", "").split("!")[-1]
-                    top_left_cell = coord.split(":")[0]
-                    cell = sheet[top_left_cell]
-                    raw_value = str(cell.value or "").strip()
-                    formulas = [simplify_formula(raw_value)] if raw_value.startswith("=") else []
+                coord = ref.replace("$", "").split("!")[-1]
+                top_left_cell = coord.split(":")[0]
+                cell = sheet[top_left_cell]
+                raw_value = str(cell.value or "").strip()
 
-                    named_refs[label] = {
-                        "sheet": sheet_name,
-                        "ref": ref,
-                        "formulas": formulas,
-                        "file": file_label
-                    }
-                except Exception:
-                    pass
+                if raw_value.startswith("="):
+                    simplified = simplify_formula(raw_value)
+                    st.write(f"✅ `{label}` at `{sheet_name}!{top_left_cell}` = {raw_value} → simplified: `{simplified}`")
+                    formulas = [simplified]
+                else:
+                    st.write(f"⚠️ `{label}` at `{sheet_name}!{top_left_cell}` has no formula. Value = `{raw_value}`")
+                    formulas = []
+
+                named_refs[label] = {
+                    "sheet": sheet_name,
+                    "ref": ref,
+                    "formulas": formulas,
+                    "file": file_label
+                }
+            except Exception as e:
+                st.write(f"❌ Error processing `{label}` → {e}")
 
     return named_refs
 
-# --- Find dependencies based on simplified formulas ---
+# --- Dependency detection ---
 def find_dependencies(named_refs):
     dependencies = defaultdict(list)
     all_labels = list(named_refs.keys())
@@ -67,7 +73,7 @@ def find_dependencies(named_refs):
 
     return dependencies
 
-# --- Graph construction ---
+# --- Graphviz graph ---
 def create_dependency_graph(dependencies, all_labels):
     dot = graphviz.Digraph()
     for label in all_labels:
@@ -111,7 +117,7 @@ def generate_ai_outputs(named_refs):
         })
     return results
 
-# --- Markdown rendering ---
+# --- Markdown table ---
 def render_markdown_table(rows):
     headers = ["Named Reference", "AI Documentation", "Excel Formula", "Python Formula"]
     md = "| " + " | ".join(headers) + " |\n"
@@ -126,7 +132,7 @@ def render_markdown_table(rows):
     return md
 
 # --- Streamlit UI ---
-st.title("📊 Excel Named Reference Dependency Viewer (with Formula Simplifier)")
+st.title("📊 Excel Named Reference Dependency Viewer (Debug Mode)")
 
 uploaded_files = st.file_uploader("Upload Excel files (.xlsx)", type=["xlsx"], accept_multiple_files=True)
 
