@@ -23,7 +23,7 @@ def simplify_formula(formula):
     formula = re.sub(r"\[[^\]]+\][^!]*!", "", formula)
     return formula
 
-# --- Extract named references using top-left cell only (with debug output) ---
+# --- Extract named references (supports array formulas) ---
 def extract_named_references(wb, file_label):
     named_refs = {}
 
@@ -38,14 +38,20 @@ def extract_named_references(wb, file_label):
                 coord = ref.replace("$", "").split("!")[-1]
                 top_left_cell = coord.split(":")[0]
                 cell = sheet[top_left_cell]
-                raw_value = str(cell.value or "").strip()
 
-                if raw_value.startswith("="):
-                    simplified = simplify_formula(raw_value)
-                    st.write(f"✅ `{label}` at `{sheet_name}!{top_left_cell}` = {raw_value} → simplified: `{simplified}`")
+                raw_formula = None
+
+                if isinstance(cell.value, str) and cell.value.strip().startswith("="):
+                    raw_formula = cell.value.strip()
+                elif hasattr(cell, "_formula_attrs") and "text" in cell._formula_attrs:
+                    raw_formula = cell._formula_attrs["text"].strip()
+
+                if raw_formula and raw_formula.startswith("="):
+                    simplified = simplify_formula(raw_formula)
+                    st.write(f"✅ `{label}` at `{sheet_name}!{top_left_cell}` = {raw_formula} → simplified: `{simplified}`")
                     formulas = [simplified]
                 else:
-                    st.write(f"⚠️ `{label}` at `{sheet_name}!{top_left_cell}` has no formula. Value = `{raw_value}`")
+                    st.write(f"⚠️ `{label}` at `{sheet_name}!{top_left_cell}` has no formula. Value = `{cell.value}`")
                     formulas = []
 
                 named_refs[label] = {
@@ -133,7 +139,7 @@ def render_markdown_table(rows):
     return md
 
 # --- Streamlit UI ---
-st.title("📊 Excel Named Reference Dependency Viewer (Debug Mode Fixed)")
+st.title("📊 Excel Named Reference Dependency Viewer (Array Formula Support)")
 
 uploaded_files = st.file_uploader("Upload Excel files (.xlsx)", type=["xlsx"], accept_multiple_files=True)
 
