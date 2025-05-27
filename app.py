@@ -92,8 +92,7 @@ def create_dependency_graph(dependencies, all_labels):
     return dot
 
 # --- GPT Explanation ---
-@st.cache_data(show_spinner=False)
-def call_openai(prompt, max_tokens=100):
+def call_openai(prompt, max_tokens=200):
     try:
         response = client.chat.completions.create(
             model="gpt-4",
@@ -115,8 +114,8 @@ def generate_ai_outputs(named_refs):
             doc = "No formula."
             py = ""
         else:
-            doc = call_openai(f"Explain this Excel formula:\n{combined_formula}")
-            py = call_openai(f"Translate this Excel formula to Python:\n{combined_formula}")
+            doc = call_openai(f"Explain this Excel formula:\n{combined_formula}", max_tokens=100)
+            py = call_openai(f"Translate this Excel formula to Python:\n{combined_formula}", max_tokens=100)
         results.append({
             "Named Reference": label,
             "AI Documentation": doc,
@@ -192,6 +191,7 @@ def generate_end_to_end_python(named_refs, dependencies):
         )
 
         python_translation = call_openai(full_prompt, max_tokens=200)
+        st.write(f"🧠 {name} = {python_translation}")
         lines.append(f"{name} = {python_translation}")
         lines.append("")
 
