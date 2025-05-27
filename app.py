@@ -1,7 +1,6 @@
 import streamlit as st
 from openai import OpenAI
 from openpyxl import load_workbook
-from openpyxl.formula.array import ArrayFormula
 import graphviz
 import io
 import re
@@ -24,7 +23,7 @@ def simplify_formula(formula):
     formula = re.sub(r"\[[^\]]+\][^!]*!", "", formula)
     return formula
 
-# --- Extract named references (now supports ArrayFormula properly) ---
+# --- Extract named references with formula fallback logic ---
 def extract_named_references(wb, file_label):
     named_refs = {}
 
@@ -44,8 +43,8 @@ def extract_named_references(wb, file_label):
 
                 if isinstance(cell.value, str) and cell.value.startswith("="):
                     raw_formula = cell.value.strip()
-                elif isinstance(cell.value, ArrayFormula):
-                    raw_formula = cell.value.text.strip()
+                elif hasattr(cell.value, "text"):
+                    raw_formula = str(cell.value.text).strip()
 
                 if raw_formula and raw_formula.startswith("="):
                     simplified = simplify_formula(raw_formula)
@@ -140,7 +139,7 @@ def render_markdown_table(rows):
     return md
 
 # --- Streamlit UI ---
-st.title("📊 Excel Named Reference Dependency Viewer (ArrayFormula Support)")
+st.title("📊 Excel Named Reference Dependency Viewer (Cloud-Safe)")
 
 uploaded_files = st.file_uploader("Upload Excel files (.xlsx)", type=["xlsx"], accept_multiple_files=True)
 
