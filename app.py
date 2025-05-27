@@ -165,23 +165,35 @@ def topological_sort(dependencies):
     return sorted_order
 
 
-def generate_python_script(named_refs, dependencies):
+def generate_end_to_end_python(named_refs, dependencies):
     order = topological_sort(dependencies)
-    lines = ["# Auto-generated Python logic to recreate spreadsheet"]
+    lines = ["# Full spreadsheet logic recreated in Python"]
 
     for name in order:
         formula = " + ".join(named_refs[name].get("formulas", []))
         if formula:
-            python_translation = call_openai(
-                f"Convert the following Excel formula to Python:\n{formula}"
-            )
             lines.append(f"# {name}")
-            lines.append(f"{name} = {python_translation}")
-            lines.append("")
+            lines.append(f"# Excel: {formula}")
         else:
-            lines.append(f"# {name} has no formula and may be an input")
+            lines.append(f"# {name} is likely an input")
             lines.append(f"{name} = ...")
             lines.append("")
+            continue
+
+        context = "\n".join(
+            f"{n}: {named_refs[n].get('formulas', [''])[0]}" for n in order if n != name
+        )
+
+        full_prompt = (
+            f"You are recreating a spreadsheet in Python. Here are the named references and formulas:\n"
+            f"{context}\n\n"
+            f"Now translate the formula for '{name}':\n{formula}\n"
+            f"Return only the Python expression for {name}."
+        )
+
+        python_translation = call_openai(full_prompt, max_tokens=200)
+        lines.append(f"{name} = {python_translation}")
+        lines.append("")
 
     return "\n".join(lines)
 
@@ -215,10 +227,11 @@ if uploaded_files:
             rows = generate_ai_outputs(combined_named_refs)
             st.markdown(render_markdown_table(rows), unsafe_allow_html=True)
 
-        st.subheader("🧪 Recreate Spreadsheet in Python")
-        with st.spinner("Generating executable Python script..."):
-            python_code = generate_python_script(combined_named_refs, dependencies)
-            st.code(python_code, language="python")
+        st.subheader("🧮 End-to-End Spreadsheet Logic in Python")
+        with st.spinner("Generating full procedural script from GPT..."):
+            final_script = generate_end_to_end_python(combined_named_refs, dependencies)
+            st.code(final_script, language="python")
+
     else:
         st.warning("No named references found.")
 else:
