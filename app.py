@@ -5,7 +5,7 @@ from io import BytesIO
 st.set_page_config(page_title="Excel Named Reference Analyzer", layout="wide")
 st.title("🔍 Excel Named Reference Analyzer")
 
-# Upload multiple Excel files
+# Upload Excel files
 uploaded_files = st.file_uploader("Upload Excel files (.xlsx)", type="xlsx", accept_multiple_files=True)
 
 if uploaded_files:
@@ -15,29 +15,25 @@ if uploaded_files:
         st.subheader(f"📄 File: {uploaded_file.name}")
 
         try:
-            # Load the file into memory for openpyxl
             in_memory_file = BytesIO(uploaded_file.read())
             wb = load_workbook(in_memory_file, data_only=False)
 
             file_named_refs = []
 
-            # ✅ Correct way to iterate over defined names
             for defined_name in wb.defined_names.definedName:
                 name = defined_name.name
-                formula = defined_name.attr_text
+                destinations = list(defined_name.destinations)  # (sheet_name, range)
 
-                # Determine if it's workbook or sheet scope
-                if defined_name.scope is None:
-                    scope = "Workbook-level"
+                if destinations:
+                    for sheet_name, cell_range in destinations:
+                        formula = f"{sheet_name}!{cell_range}"
+                        scope = sheet_name
+                        file_named_refs.append((name, formula, scope))
                 else:
-                    try:
-                        scope = wb.sheetnames[defined_name.scope]
-                    except IndexError:
-                        scope = f"Sheet index {defined_name.scope} (invalid or missing)"
+                    formula = defined_name.attr_text
+                    scope = "Workbook-level"
+                    file_named_refs.append((name, formula, scope))
 
-                file_named_refs.append((name, formula, scope))
-
-            # Display named references
             if file_named_refs:
                 st.write("🔗 Named References Found:")
                 for name, formula, scope in file_named_refs:
@@ -57,4 +53,4 @@ if uploaded_files:
     st.success(f"✅ Extracted {len(all_named_references)} named references from {len(uploaded_files)} file(s).")
 
 else:
-    st.info("⬆️ Please upload one or more `.xlsx` Excel files to begin.")
+    st.info("⬆️ Upload one or more `.xlsx` Excel files to begin.")
