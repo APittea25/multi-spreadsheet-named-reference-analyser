@@ -15,14 +15,14 @@ if not openai_api_key:
     st.stop()
 client = OpenAI(api_key=openai_api_key)
 
-# --- Simplify external references like 'C:\path\file.xlsx'!Name or '[file.xlsx]Sheet'!Name ---
+# --- Simplify external references ---
 def simplify_formula(formula):
     if not formula:
         return ""
-    # Remove external references and sheet names
-    return re.sub(r"(?:'[^']*\.xlsx'!|'[^']*'!|\[[^\]]+\][^!]*!)", "", formula)
+    # Remove any quoted external file references ending in .xlsx'!
+    return re.sub(r"'[^']+\.xlsx'!", "", formula)
 
-# --- Extract named references using only top-left cell of each range ---
+# --- Extract named references using top-left cell only ---
 def extract_named_references(wb, file_label):
     named_refs = {}
 
@@ -34,7 +34,7 @@ def extract_named_references(wb, file_label):
                 label = name
                 try:
                     coord = ref.replace("$", "").split("!")[-1]
-                    top_left_cell = coord.split(":")[0]  # Only pick top-left cell even in ranges
+                    top_left_cell = coord.split(":")[0]
                     cell = sheet[top_left_cell]
                     raw_value = str(cell.value or "").strip()
                     formulas = [simplify_formula(raw_value)] if raw_value.startswith("=") else []
@@ -50,7 +50,7 @@ def extract_named_references(wb, file_label):
 
     return named_refs
 
-# --- Find dependencies based on presence of other named references in formulas ---
+# --- Dependency detection ---
 def find_dependencies(named_refs):
     dependencies = defaultdict(list)
     all_labels = list(named_refs.keys())
