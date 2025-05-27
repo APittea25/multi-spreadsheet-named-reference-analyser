@@ -15,14 +15,13 @@ if not openai_api_key:
     st.stop()
 client = OpenAI(api_key=openai_api_key)
 
-# --- Strip external and sheet references from formulas ---
+# --- Simplify formulas by removing external workbook and sheet links ---
 def simplify_formula(formula):
     if not formula:
         return ""
-    # Remove external workbook links and sheet names like: 'https://...xlsx'! or 'Sheet1'!
     return re.sub(r"(?:'[^']*\.xlsx'!|'[^']*'!)", "", formula)
 
-# --- Extract named references from a workbook ---
+# --- Extract named references from workbook ---
 def extract_named_references(wb, file_label):
     named_refs = {}
     for name in wb.defined_names:
@@ -40,18 +39,17 @@ def extract_named_references(wb, file_label):
                 }
                 try:
                     sheet = wb[sheet_name]
-                    # Handle ranges: take first cell (e.g., Table or A1:A10)
                     first_cell = ref.split(":")[0].split("!")[-1].replace("$", "")
                     cell = sheet[first_cell]
-                    if cell.data_type == 'f':
-                        item["formula"] = simplify_formula(cell.value)
+                    raw_value = str(cell.value or "")
+                    if raw_value.strip().startswith("="):
+                        item["formula"] = simplify_formula(raw_value.strip())
                 except Exception:
-                    # Still add the item with no formula
                     pass
                 named_refs[label].append(item)
     return named_refs
 
-# --- Build dependency map based on formula usage ---
+# --- Find dependencies based on names used in formulas ---
 def find_dependencies(named_refs):
     dependencies = defaultdict(list)
     labels = list(named_refs.keys())
@@ -66,7 +64,7 @@ def find_dependencies(named_refs):
                     dependencies[target_label].append(source_label)
     return dependencies
 
-# --- Create Graphviz graph ---
+# --- Create graph showing all references + arrows for dependencies ---
 def create_dependency_graph(dependencies, all_labels):
     dot = graphviz.Digraph()
     for label in all_labels:
@@ -76,7 +74,7 @@ def create_dependency_graph(dependencies, all_labels):
             dot.edge(source, target)
     return dot
 
-# --- GPT explanations ---
+# --- GPT-4 formula explanations ---
 @st.cache_data(show_spinner=False)
 def call_openai(prompt, max_tokens=100):
     try:
@@ -109,7 +107,7 @@ def generate_ai_outputs(named_refs):
         })
     return results
 
-# --- Markdown table rendering ---
+# --- Render Markdown table ---
 def render_markdown_table(rows):
     headers = ["Named Reference", "AI Documentation", "Excel Formula", "Python Formula"]
     md = "| " + " | ".join(headers) + " |\n"
@@ -124,9 +122,9 @@ def render_markdown_table(rows):
     return md
 
 # --- Streamlit UI ---
-st.title("📊 Excel Named Reference Dependency Viewer (Enhanced)")
+st.title("📊 Excel Named Reference Dependency Viewer (Multi-Workbook + External Fixes)")
 
-uploaded_files = st.file_uploader("Upload one or more Excel (.xlsx) files", type=["xlsx"], accept_multiple_files=True)
+uploaded_files = st.file_uploader("Upload Excel files (.xlsx)", type=["xlsx"], accept_multiple_files=True)
 
 if uploaded_files:
     combined_named_refs = defaultdict(list)
